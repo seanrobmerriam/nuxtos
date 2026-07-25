@@ -51,11 +51,39 @@ const windowPosition = reactive({
   y: 90
 })
 
+const windowSize = reactive({
+  width: 760,
+  height: 520
+})
+
+const isMaximized = ref(false)
+
+const previousBounds = {
+  x: 0,
+  y: 0,
+  width: 760,
+  height: 520
+}
+
+const MIN_WINDOW_WIDTH = 420
+const MIN_WINDOW_HEIGHT = 380
+
 let clockTimer: ReturnType<typeof setInterval> | undefined
 
 let isDragging = false
 let dragOffsetX = 0
 let dragOffsetY = 0
+
+type ResizeDirection = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
+
+let isResizing = false
+let resizeDirection: ResizeDirection | null = null
+let resizeStartX = 0
+let resizeStartY = 0
+let resizeStartWidth = 0
+let resizeStartHeight = 0
+let resizeStartLeft = 0
+let resizeStartTop = 0
 
 function updateClock() {
   currentTime.value = new Intl.DateTimeFormat('en-US', {
@@ -83,8 +111,57 @@ function centerWindow() {
   const width = Math.min(760, window.innerWidth - 48)
   const height = Math.min(520, window.innerHeight - 160)
 
+  windowSize.width = width
+  windowSize.height = height
+
   windowPosition.x = Math.max(24, (window.innerWidth - width) / 2)
   windowPosition.y = Math.max(48, (window.innerHeight - height) / 2)
+
+  isMaximized.value = false
+}
+
+function toggleMaximize() {
+  if (!import.meta.client) {
+    return
+  }
+
+  if (isMaximized.value) {
+    windowPosition.x = previousBounds.x
+    windowPosition.y = previousBounds.y
+    windowSize.width = previousBounds.width
+    windowSize.height = previousBounds.height
+
+    isMaximized.value = false
+    return
+  }
+
+  previousBounds.x = windowPosition.x
+  previousBounds.y = windowPosition.y
+  previousBounds.width = windowSize.width
+  previousBounds.height = windowSize.height
+
+  windowPosition.x = 12
+  windowPosition.y = 48
+  windowSize.width = window.innerWidth - 24
+  windowSize.height = window.innerHeight - 144
+
+  isMaximized.value = true
+}
+
+function handleViewportResize() {
+  if (!import.meta.client) {
+    return
+  }
+
+  if (isMaximized.value) {
+    windowPosition.x = 12
+    windowPosition.y = 48
+    windowSize.width = window.innerWidth - 24
+    windowSize.height = window.innerHeight - 144
+    return
+  }
+
+  centerWindow()
 }
 
 function startDragging(event: PointerEvent) {
@@ -129,13 +206,91 @@ function stopDragging() {
   window.removeEventListener('pointerup', stopDragging)
 }
 
+function startResizing(event: PointerEvent, direction: ResizeDirection) {
+  if (window.innerWidth < 640 || isMaximized.value) {
+    return
+  }
+
+  isResizing = true
+  resizeDirection = direction
+  resizeStartX = event.clientX
+  resizeStartY = event.clientY
+  resizeStartWidth = windowSize.width
+  resizeStartHeight = windowSize.height
+  resizeStartLeft = windowPosition.x
+  resizeStartTop = windowPosition.y
+
+  window.addEventListener('pointermove', resizeWindow)
+  window.addEventListener('pointerup', stopResizing)
+}
+
+function resizeWindow(event: PointerEvent) {
+  if (!isResizing || !resizeDirection) {
+    return
+  }
+
+  const deltaX = event.clientX - resizeStartX
+  const deltaY = event.clientY - resizeStartY
+
+  const maxWidth = window.innerWidth - 24
+  const maxHeight = window.innerHeight - 96
+
+  if (resizeDirection.includes('e')) {
+    windowSize.width = Math.min(
+      maxWidth,
+      Math.max(MIN_WINDOW_WIDTH, resizeStartWidth + deltaX)
+    )
+  }
+
+  if (resizeDirection.includes('s')) {
+    windowSize.height = Math.min(
+      maxHeight,
+      Math.max(MIN_WINDOW_HEIGHT, resizeStartHeight + deltaY)
+    )
+  }
+
+  if (resizeDirection.includes('w')) {
+    const width = Math.min(
+      maxWidth,
+      Math.max(MIN_WINDOW_WIDTH, resizeStartWidth - deltaX)
+    )
+
+    windowPosition.x = Math.max(
+      12,
+      resizeStartLeft + (resizeStartWidth - width)
+    )
+    windowSize.width = width
+  }
+
+  if (resizeDirection.includes('n')) {
+    const height = Math.min(
+      maxHeight,
+      Math.max(MIN_WINDOW_HEIGHT, resizeStartHeight - deltaY)
+    )
+
+    windowPosition.y = Math.max(
+      48,
+      resizeStartTop + (resizeStartHeight - height)
+    )
+    windowSize.height = height
+  }
+}
+
+function stopResizing() {
+  isResizing = false
+  resizeDirection = null
+
+  window.removeEventListener('pointermove', resizeWindow)
+  window.removeEventListener('pointerup', stopResizing)
+}
+
 onMounted(() => {
   updateClock()
   centerWindow()
 
   clockTimer = setInterval(updateClock, 30_000)
 
-  window.addEventListener('resize', centerWindow)
+  window.addEventListener('resize', handleViewportResize)
 })
 
 onBeforeUnmount(() => {
@@ -143,9 +298,11 @@ onBeforeUnmount(() => {
     clearInterval(clockTimer)
   }
 
-  window.removeEventListener('resize', centerWindow)
+  window.removeEventListener('resize', handleViewportResize)
   window.removeEventListener('pointermove', dragWindow)
   window.removeEventListener('pointerup', stopDragging)
+  window.removeEventListener('pointermove', resizeWindow)
+  window.removeEventListener('pointerup', stopResizing)
 })
 </script>
 
@@ -232,7 +389,9 @@ onBeforeUnmount(() => {
           class="app-window"
           :style="{
             left: `${windowPosition.x}px`,
-            top: `${windowPosition.y}px`
+            top: `${windowPosition.y}px`,
+            width: `${windowSize.width}px`,
+            height: `${windowSize.height}px`
           }"
         >
           <!-- Window title bar -->
@@ -266,13 +425,13 @@ onBeforeUnmount(() => {
               />
 
               <UButton
-                icon="i-lucide-maximize-2"
+                :icon="isMaximized ? 'i-lucide-minimize-2' : 'i-lucide-maximize-2'"
                 color="neutral"
                 variant="ghost"
                 size="xs"
                 square
-                aria-label="Center application"
-                @click="centerWindow"
+                :aria-label="isMaximized ? 'Restore application' : 'Maximize application'"
+                @click="toggleMaximize"
               />
 
               <UButton
@@ -498,6 +657,40 @@ onBeforeUnmount(() => {
               </div>
             </template>
           </div>
+
+          <!-- Resize handles -->
+          <div
+            class="resize-handle resize-handle-n"
+            @pointerdown.stop="startResizing($event, 'n')"
+          />
+          <div
+            class="resize-handle resize-handle-s"
+            @pointerdown.stop="startResizing($event, 's')"
+          />
+          <div
+            class="resize-handle resize-handle-e"
+            @pointerdown.stop="startResizing($event, 'e')"
+          />
+          <div
+            class="resize-handle resize-handle-w"
+            @pointerdown.stop="startResizing($event, 'w')"
+          />
+          <div
+            class="resize-handle resize-handle-ne"
+            @pointerdown.stop="startResizing($event, 'ne')"
+          />
+          <div
+            class="resize-handle resize-handle-nw"
+            @pointerdown.stop="startResizing($event, 'nw')"
+          />
+          <div
+            class="resize-handle resize-handle-se"
+            @pointerdown.stop="startResizing($event, 'se')"
+          />
+          <div
+            class="resize-handle resize-handle-sw"
+            @pointerdown.stop="startResizing($event, 'sw')"
+          />
         </section>
       </Transition>
 
@@ -717,8 +910,7 @@ onBeforeUnmount(() => {
   position: absolute;
   z-index: 20;
   display: flex;
-  width: min(760px, calc(100vw - 48px));
-  height: min(520px, calc(100dvh - 160px));
+  min-width: 420px;
   min-height: 380px;
   flex-direction: column;
   overflow: hidden;
@@ -729,6 +921,77 @@ onBeforeUnmount(() => {
     0 32px 80px rgb(0 0 0 / 45%),
     inset 0 1px 0 rgb(255 255 255 / 12%);
   backdrop-filter: blur(28px);
+}
+
+.resize-handle {
+  position: absolute;
+  z-index: 5;
+  touch-action: none;
+}
+
+.resize-handle-n {
+  top: -4px;
+  right: 10px;
+  left: 10px;
+  height: 8px;
+  cursor: ns-resize;
+}
+
+.resize-handle-s {
+  right: 10px;
+  bottom: -4px;
+  left: 10px;
+  height: 8px;
+  cursor: ns-resize;
+}
+
+.resize-handle-e {
+  top: 10px;
+  right: -4px;
+  bottom: 10px;
+  width: 8px;
+  cursor: ew-resize;
+}
+
+.resize-handle-w {
+  top: 10px;
+  bottom: 10px;
+  left: -4px;
+  width: 8px;
+  cursor: ew-resize;
+}
+
+.resize-handle-ne,
+.resize-handle-nw,
+.resize-handle-se,
+.resize-handle-sw {
+  z-index: 6;
+  width: 14px;
+  height: 14px;
+}
+
+.resize-handle-ne {
+  top: -4px;
+  right: -4px;
+  cursor: nesw-resize;
+}
+
+.resize-handle-nw {
+  top: -4px;
+  left: -4px;
+  cursor: nwse-resize;
+}
+
+.resize-handle-se {
+  right: -4px;
+  bottom: -4px;
+  cursor: nwse-resize;
+}
+
+.resize-handle-sw {
+  bottom: -4px;
+  left: -4px;
+  cursor: nesw-resize;
 }
 
 .window-titlebar {
@@ -1071,8 +1334,13 @@ onBeforeUnmount(() => {
   .app-window {
     inset: 3rem 0.75rem 6.25rem !important;
     width: auto !important;
-    height: auto;
+    height: auto !important;
+    min-width: 0;
     min-height: 0;
+  }
+
+  .resize-handle {
+    display: none;
   }
 
   .window-titlebar {
